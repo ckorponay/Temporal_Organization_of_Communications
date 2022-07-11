@@ -1,0 +1,272 @@
+%% Evaluate the systems-level temporal organization of a circuit/network of 
+%% interest using "temporal unwrapping"/edge functional connectivity (eFC).
+%% From Korponay et al (2022), "The Temporal Orgaization of Corticostriatal
+%% Communications". 
+
+
+% clean up env for clean run
+clearvars; close all; clc
+
+%%%%% INPUTS and DOWNLOADS %%%%%
+
+%Requires cleaned/preprocessed fMRI BOLD timeseries data in NIFTI format
+
+%1.
+%perform the following AFNI commands in the terminal to extract an
+%individual subject's cleaned/preprocessed BOLD timeseries at each voxel/ROI in the two structures of interest
+%(e.g., striatum and frontal cortex). These CSV files are the inputs to this script:
+
+%Structure 1 (e.g., striatum) 
+
+  %foreach subj ($subjList)
+  %3dmaskdump -noijk  -mask rStriatum_Mask.nii.gz {$subj}_Clean_rfMRI_REST1.nii.gz > {$subj}_rStriatum_Clean_TimeSeries_.1D
+  %1dcat -csvout {$subj}_rStriatum_Clean_TimeSeries_.1D > {$subj}_rStriatum_Clean_TimeSeries.csv
+  %end
+  
+%Structure 2 (e.g., frontal cortex)
+
+  %foreach subj ($subjList)
+  %foreach seed ($seedList)
+  %3dmaskave -quiet -overwrite -mask HarvardOxford/{$seed}.nii {$subj}_Clean_rfMRI_REST1.nii.gz > {$subj}_Clean_rfMRI_REST1_{$seed}_ts.1D
+  %end
+  %1dcat -csvout -overwrite {$subj}_*_Clean_TimeSeries.1D > {$subj}_CorticalROIs_Clean_TimeSeries.csv
+  %end
+
+
+%2.
+%Download the eFC package from
+%https://github.com/brain-networks/edge-centric_demo 
+%Faskowitz et al (2020) 
+
+  
+% add helper functions to path
+addpath(genpath('fcn'));
+addpath '/eFC/fcn'
+addpath '/NIfTI_20140122'
+addpath '/BCT'
+      
+%% load node time series CSV files for each subject
+P = '/rStriatum_TimeSeries';
+S = dir(fullfile(P,'*.csv')); 
+
+P2 = '/CorticalROIs_TimeSeries';
+S2 = dir(fullfile(P2,'*.csv'));
+
+
+%% I).
+
+%% Compute a group-averaged edge functional connectivity (eFC) matrix,
+%% quantifying the correlation between each edge's "edge time series"
+%% and every other edge's "edge time series" 
+
+for i = 1:numel(S)
+%i.e., for each subject:
+
+%load striatal voxel-wise timeseries
+
+    F = fullfile(P,S(i).name);
+    S(i).data = readtable(F,'NumHeaderLines', 1);
+    S(i).data = table2array(S(i).data); 
+    S(i).data = double(S(i).data);
+    S(i).data = S(i).data';
+    S(i).data = S(i).data(any(S(i).data,2),:);   %remove censored TRs (i.e. rows of all zeros)
+
+    
+[T,N] = size(S(i).data);
+M = N*(N - 1)/2;
+
+
+[~,n] = size(S(i).data);               % number samples/nodes
+z1 = zscore(S(i).data);                % z-score
+
+
+%load cortical ROI timeseries
+    F2 = fullfile(P2,S2(i).name);
+    S2(i).data = readtable(F2,'NumHeaderLines', 1);
+    S2(i).data = table2array(S2(i).data); 
+    S2(i).data = double(S2(i).data);
+    S2(i).data = S2(i).data(any(S2(i).data,2),:);   %remove censored TRs (i.e. rows of all zeros)
+  
+    
+[T2,N2] = size(S2(i).data);
+M2 = N2*(N2 - 1)/2;
+
+
+[~,n] = size(S2(i).data);               % number samples/nodes
+z2 = zscore(S2(i).data);                % z-score
+
+
+%compute the edge time series (eTS) of each corticostriatal edge
+h=1
+for x = 1:N                                  
+    for j = 1:N2
+       S(i).data(:,h) = z1(:,x).*z2(:,j);
+       h=h+1;
+    end
+end
+
+
+%compute the edge functional connectivity (eFC) matrix
+S(i).data = fcn_edgets2edgecorr(S(i).data);  
+
+if i=1
+    S(i-1).data = 0;
+
+S(i).data = S(i).data + S(i-1).data;  %add it to the other subjects' eFC matrices
+
+S(i-1).data = []; %clear old data to allow space for next iteraction
+ 
+
+
+end
+
+Group_eFC = S(i).data/numel(S);   %Compute the group-averaged eFC matrix
+
+
+%% II).
+
+%% Use k-means clustering to group edges with similar eFC profiles into
+%% k communities
+
+Edges_k_Communities = kmeans(Group_eFC',k,...
+    'distance','sqeuclidean',...
+    'Display','iter',...
+    'maxiter',1000);
+
+
+%% III).
+
+%% The edge community profile of each node:
+%% shows the node-pair comprising each edge; shows all the edges that 
+%% each node belongs to, and the community number of each edge.
+
+NodePairMatrix_k = zeros(N,N2);
+NodePairMatrix_k = reshape(Edges_k_Communities,[N2,N]);
+NodePairMatrix_k = NodePairMatrix_k';
+
+
+%% IV).
+
+%% Compute the % by which each striatal node belongs to each edge community
+
+Community_Fingerprint_k = zeros(N,k);
+for j=1:N
+ Community_Fingerprint_k(j,:) = histcounts(NodePairMatrix_k(j,:),1:k+1);
+end 
+
+Community_Fingerprint_k = Community_Fingerprint_k/(N2); 
+
+
+%% V).
+
+%% Find the strongest community of each striatal voxel
+
+maxPercent_k = zeros(1,N);
+maxGroup_k = zeros(1,N);
+
+for x=1:N
+[maxPercent_k(x),maxGroup_k(x)]=max(Community_Fingerprint_k(x,:),[],2);
+end
+maxGroup_k=maxGroup_k';
+
+%Number of voxels in each maxgroup
+sum(maxGroup_k6==1) = 
+sum(maxGroup_k6==2) = 
+sum(maxGroup_k6==3) = 
+sum(maxGroup_k6==4) = 
+sum(maxGroup_k6==5) = 
+sum(maxGroup_k6==6) =
+
+
+%% VI). 
+
+%% Compute Normalized Entropy of each Node's Edge Community Profile
+%% (i.e., the degree to which it participates in many communities)
+
+enorm_k = zeros(N,1);
+h = zeros(N,max(Edges_k_Communities));
+h = Community_Fingerprint_k(:,1:max(Edges_k_Communities))*N2;
+p = bsxfun(@rdivide,h,sum(h,2));
+e = -nansum(p.*log2(p),2);
+enorm_k = e/log2(max(Edges_k_Communities));
+
+
+%% VII). 
+
+%% For each striatal voxel, compute the synchrony (i.e., average eFC) of
+%% all its edges to frontal cortex; identify high-synchrony outliers
+
+i=1
+j=30
+
+for n=1:N
+    Synchrony(n)= mean(nonzeros(triu(Group_eFC(i:j,i:j),1)),'all');
+
+j=j+30;
+i=i+30;
+
+end
+
+Synchrony = Synchrony';
+boxplot(Synchrony)
+
+
+
+%% VIII). 
+
+%% Distinguish different types of edge-pairs and their eFC properties
+
+eFC_RowIDs_Striatum=0
+eFC_RowIDs_Cortex=0
+Group_eFC_Indices=1:N*N2;
+
+for i= 1:N*N2
+    eFC_RowIDs_Striatum(i)= floor(Group_eFC_Indices(i)/N2+1);   %identify the striatal voxel number (edge node 1)
+    eFC_RowIDs_Cortex(i)= rem(Group_eFC_Indices(i),N2);         %identify the corresponding cortical ROI number (edge node 2)
+    if  eFC_RowIDs_Cortex(i) == 0
+         eFC_RowIDs_Cortex(i) = N2;
+    end
+end
+eFC_RowIDs = [eFC_RowIDs_Striatum', eFC_RowIDs_Cortex']
+
+%need to manually adjust first column of eFC_RowIDs by one row%
+
+RHLHpairs = [1,3,5,7,9,11,13,15,17,19,21,23,25,27,29;2,4,6,8,10,12,14,16,18,20,22,24,26,28,30];
+RHLHpairs = RHLHpairs';
+
+[High_eFC_row,High_eFC_column]=find(triu(Group_eFC >= 0.7 & Group_eFC_rS_Disc < 0.7999999 ,1));
+%[High_eFC_row,High_eFC_column]=find(triu(Group_eFC_rS_Disc,1));
+
+High_eFC_NodePairs=[eFC_RowIDs(High_eFC_row, :), eFC_RowIDs(High_eFC_column, :)];
+
+TotalEdges = length(High_eFC_NodePairs);
+
+%Type1 Edge-Pairs
+histogram((eFC_triu((High_eFC_NodePairs(:,1) == High_eFC_NodePairs(:,3)) & (ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:)),1000, 'Normalization','probability')
+meanHigh_eFC_NodePair_SameStriatum_RHLHCortex = mean(eFC_triu((High_eFC_NodePairs(:,1) == High_eFC_NodePairs(:,3)) & (ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:));
+High_eFC_NodePair_SameStriatum_RHLHCortex = High_eFC_NodePairs((High_eFC_NodePairs(:,1) == High_eFC_NodePairs(:,3)) & (ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:);
+Total_Type1Edges=length(High_eFC_NodePair_SameStriatum_RHLHCortex)
+
+%Type2 Edge-Pairs
+histogram((eFC_triu((High_eFC_NodePairs(:,1) == High_eFC_NodePairs(:,3)) & ~(ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:)),1000, 'Normalization','probability')
+meanHigh_eFC_NodePair_SameStriatum_NonRLCortex = mean(eFC_triu((High_eFC_NodePairs(:,1) == High_eFC_NodePairs(:,3)) & ~(ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:));
+High_eFC_NodePair_SameStriatum_NonRLCortex = High_eFC_NodePairs((High_eFC_NodePairs(:,1) == High_eFC_NodePairs(:,3)) & ~(ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:);
+Total_Type2Edges=length(High_eFC_NodePair_SameStriatum_NonRLCortex)
+
+%Type3 Edge-Pairs
+histogram((eFC_triu((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) &  (High_eFC_NodePairs(:,2) == High_eFC_NodePairs(:,4)),:)),1000, 'Normalization','probability')
+meanHigh_eFC_NodePair_FarStriatum_SameCortex = mean(eFC_triu((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) &  (High_eFC_NodePairs(:,2) == High_eFC_NodePairs(:,4)),:));
+High_eFC_NodePair_FarStriatum_SameCortex = High_eFC_NodePairs((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) &  (High_eFC_NodePairs(:,2) == High_eFC_NodePairs(:,4)),:);
+Total_Type3Edges=length(High_eFC_NodePair_FarStriatum_SameCortex)
+
+%Type4 Edge-Pairs
+histogram((eFC_triu((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) & (ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:)),1000, 'Normalization','probability')
+meanHigh_eFC_NodePair_FarStriatum_RLCortex = mean(eFC_triu((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) & (ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:));
+High_eFC_NodePair_FarStriatum_RLCortex = High_eFC_NodePairs((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) & (ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')),:);
+Total_Type4Edges=length(High_eFC_NodePair_FarStriatum_RLCortex)
+
+%Type5 Edge-Pairs
+histogram((eFC_triu((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) & (~ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')) &  (High_eFC_NodePairs(:,2) ~= High_eFC_NodePairs(:,4)),:)),1000, 'Normalization','probability') 
+meanHigh_eFC_NodePair_FarStriatum_NonSameNonRLCortex = mean(eFC_triu((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) & (~ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')) &  (High_eFC_NodePairs(:,2) ~= High_eFC_NodePairs(:,4)),:));
+High_eFC_NodePair_FarStriatum_NonSameNonRLCortex = High_eFC_NodePairs((rStriatum_Parcellated(High_eFC_NodePairs(:,1)) ~= rStriatum_Parcellated(High_eFC_NodePairs(:,3))) & (rStriatum_Parcellated(High_eFC_NodePairs(:,1))~=1) & (rStriatum_Parcellated(High_eFC_NodePairs(:,3))~=1) & (~ismember([High_eFC_NodePairs(:,2),High_eFC_NodePairs(:,4)],RHLHpairs,'rows')) &  (High_eFC_NodePairs(:,2) ~= High_eFC_NodePairs(:,4)),:);
+Total_Type5Edges=length(High_eFC_NodePair_FarStriatum_NonSameNonRLCortex)
